@@ -3,10 +3,6 @@
 """
 watchedinstall.py
 
-Created by Preston Holmes on 2009-03-27.
-preston@ptone.com
-Copyright (c) 2009 All rights reserved.
-
 This script will run the osx command line installer and watch the process for any child
 processes that are spawned.
 Meanwhile a tool that monitors all changes to the file system is also started
@@ -14,8 +10,40 @@ Meanwhile a tool that monitors all changes to the file system is also started
 finally the log of all FS changes is filtered for only those changes made by the installer 
 or its descendant processes and the output is generated either in radmind or generic format
 
+Changes:
+2009-07-15
+Initial public release
+2009-07-16
+no longer check for existance of command file if format is not radmind
+
 todo:
 allow convenience reference to command file as in radwrap
+
+Created by Preston Holmes on 2009-03-27.
+preston@ptone.com
+
+Copyright (c) 2009 Preston Holmes
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
 """
 
 import sys
@@ -27,19 +55,35 @@ from optparse import OptionParser,OptionGroup
 # the following imports only needed for python fsdiff
 import xattr
 import hashlib
+import shutil
 import pdb
 
 excludes = []
 logfile = '/tmp/events.log'
+pidlog = '/tmp/pid_log.log'
 unsorted_file = '/tmp/unsorted'
+pkg_maker_cmd = '/Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker'
+
 debug = False
 
 pids = set() # maintains collection of unique values
 
+def sh(cmd):
+    return Popen(cmd,shell=True,stdout=PIPE,stderr=PIPE).communicate()[0]
 
+def parse_pidlog(parentPID):
+    global pids
+    global pidlog
+    for i,line in enumerate(open(pidlog)):
+        if i == 0: 
+            continue # skip the header line
+        data = line.split()
+        if data[2] in pids:
+            pids.add(data[1])
+    
 def parse_excludes (path):
     global excludes
-    for line in open(path).readlines():
+    for line in open(path):
         if line[0] == 'x':
             p = line.split()[1]\
                 .lstrip('.')\
@@ -71,6 +115,21 @@ def cleanup():
     except:
         pass
 
+def pkg_from_transcript(transcript):
+    pkg_root = '/tmp/package_root'
+    pkg_maker_cmd = '/Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker'
+    if not os.path.exists(pkg_root): os.makedirs(pkg_root)
+    os.chdir('/')
+    for line in open(transcript):
+        fields = line.split()
+        abs_path = os.path.abspath(fields[1])
+        if os.path.isfile(abs_path):
+            dest = os.path.join (pkg_root,os.path.dirname(abs_path)[1:] + '/')
+            call(['ditto',abs_path,dest])
+    pkg_id = os.path.basename(transcript)
+    call([pkg_maker_cmd,'--root',pkg_root,'--id',pkg_id,'--title',pkg_id,'--target','10.4','--out',pkg_id + '.pkg'])
+    shutil.rmtree(pkg_root)
+
 def main():
 
     parser = OptionParser()
@@ -81,7 +140,7 @@ def main():
     parser.add_option ('-o','--output',dest='out_file',
                         help='file to save results in, if not specified use standard out',metavar='PATH')
     parser.add_option ('-f','--format',
-                        help='format for output file, default: radmind', default='radmind',metavar='[radmind | standard]')
+                        help='format for output file, default: radmind', default='radmind',metavar='[radmind | standard | package]')
     parser.add_option ('-i','--pid', help="Manually specify the PID of the parent installer process", metavar="PID")
     
     installer_group = OptionGroup(parser,"Installer Options",
@@ -99,7 +158,7 @@ def main():
                         action="store_true",default=False)
     rad_group.add_option('-C','--comparison-path',dest='comparison_path',
                         help='comparison path to use, default is relative', default='.',metavar='[ . | / ]')
-    rad_group.add_option('-c',dest='checksum',help='checksum if any, only sha1 supported',metavar='[ only sha1 supported ]')
+    rad_group.add_option('-c',dest='checksum',help='checksum if any, only sha1 supported for -P option',metavar='[ only sha1 supported ]')
     rad_group.add_option('-P',dest='pythondiff',help='enable experimental pure python fsdiff output (faster)',action="store_true",default=False)
     parser.usage = """
                         watchedinstall.py [options]
@@ -131,13 +190,23 @@ def main():
     if options.verbose and not options.out_file:
         sys.stderr.write('WARNING: no output file specified, verbose output disabled, writing to standard out\n')
         options.verbose = False
-    if options.command_file != None and not os.path.exists(options.command_file):
+    if options.format == 'radmind' and not os.path.exists(options.command_file):
         parser.error("specified command file could not be found")
     if options.installer_target != '/':
         options.installer_target = options.installer_target.rstrip('/') # strip trailing /
     if os.geteuid() != 0:
         parser.error ('must be run as root')
-    
+    # if call(['which',''])
+    if options.format == 'package':
+        if not os.path.exists(pkg_maker_cmd):
+            parser.error ('packagemaker tool not found - are developer tools installed?')
+        if not os.path.exists('/usr/bin/otool') and os.path.exists('/Developer/usr/bin/otool'):
+            # fixes a glitch in packagemaker expectations if unix portion of dev tools not installed
+            sh('ln -s /Developer/usr/bin/otool /usr/bin/otool')
+    if options.format == 'package' and options.installer_target != '/' and options.installer_package:
+        parser.error ('package output currently only available for installs on boot volume')
+    if options.format == 'radmind' and sh('which fsdiff') == '':
+        parser.error ('radmind tools not found') 
     cleanup()
 
     # the install and parselog steps were made into functions so that 
@@ -148,13 +217,15 @@ def main():
         a PS command to keep track of any descendent PIDs spawned by the installer"""
         global pids
         log_handle = open(logfile,'w')
+        pidlog_handle = open(pidlog,'w')
+        
         SCRIPT_ROOT = os.path.dirname(os.path.realpath(__file__))
         fsewatcher = os.path.join(SCRIPT_ROOT,'fsewatcher')
         if not os.path.exists(fsewatcher) and os.access(fsewatcher,os.X_OK):
             # will need to be on path
             fsewatcher = 'fsewatcher'
         try:
-            logger = Popen(['fsewatcher'], stdout=log_handle,shell=True)
+            fs_logger = Popen(['fsewatcher'], stdout=log_handle,shell=True)
         except OSError:
             sys.exit("Unable to run fsevents tool, make sure it was properly installed")
         if options.installer_package:
@@ -162,27 +233,39 @@ def main():
             # these environment variable can help convince installer to install on non-boot drive
             os.environ['CM_BUILD'] = 'CM_BUILD'
             os.environ['COMMAND_LINE_INSTALL'] = '1'
+            
+            pid_logger = Popen(['execsnoop'],stdout=pidlog_handle,shell=True)
+            
             if options.verbose:
                 installer_out = sys.stdout
             else:
                 installer_out = PIPE
+            if options.verbose:
+                print "fsewatcher running - starting installer"
+            
             installer = Popen(installer_command, stdout=installer_out, stderr=STDOUT, bufsize=1)
             parentPID = str(installer.pid)
             pids.add(parentPID)
             # disable spotlight
             call(['launchctl','unload','/System/Library/LaunchDaemons/com.apple.metadata.mds.plist'])
             while installer.poll() != 0:
-                process_list = Popen("ps -ax -o ppid=,pid=,command=", shell=True, stdout=PIPE,stderr=PIPE).communicate()[0].split('\n')[:-1]
-                for p in process_list:
-                    data = p.split()
-                    if data[0] in pids:
-                        pids.add(data[1])
+                
+                # second implementation - now post process log
+                # process_list = Popen("ps -ax -o ppid=,pid=,command=", shell=True, stdout=PIPE,stderr=PIPE).communicate()[0].split('\n')[:-1]
+                # for p in process_list:
+                #     data = p.split()
+                #     if data[0] in pids:
+                #         pids.add(data[1])
+                
+                # first implemenation
                 # if loop % 10 == 0:
                 #     if options.verbose:
                 #         print '\n'.join(installer.stdout.readlines(1024))
                 #     # todo check on logger process
                 # loop += 1
-                time.sleep(.1)
+                time.sleep(1)
+            if options.verbose:
+                print "installer exited"
             if  installer.returncode:
                 errstr = "Installer Failed with return code: %s\n%s" % (installer.returncode,installer.communicate()[0])
                 sys.exit(errstr)
@@ -191,22 +274,29 @@ def main():
             parentPID = options.pid
             pids.add(parentPID)
             parent_found = True
+            # todo: add execsnoop feature to this part
             while parent_found:
-                parent_found = False
                 process_list = Popen("ps -ax -o ppid=,pid=,command=", shell=True, stdout=PIPE,stderr=PIPE).communicate()[0].split('\n')[:-1]
                 for p in process_list:
                     data = p.split()
                     if data[1] == parentPID:
                         parent_found = True
-                    if data[0] in pids:
-                        pids.add(data[1])
+                    else:
+                        parent_found = False
+                    # if data[0] in pids:
+                    #     pids.add(data[1])
                 if not parent_found:
                     break
-                time.sleep(.1)
+                time.sleep(1)
+                
         # stop the logger
-        call(['kill',str (logger.pid)])
+        if options.verbose:
+            print "killing logger processes"
+        call(['kill',str (fs_logger.pid)])
+        call(['kill',str (pid_logger.pid)])
         log_handle.close()
-
+        pidlog_handle.close()
+        parse_pidlog(parentPID)
 
     def parselog():
         """As efficiently as possible scan the log of FS changes to extract and 
@@ -344,7 +434,6 @@ def main():
         PATH = 3
         INODE = 4
         if options.verbose:
-            loop = 0.0
             last_percent = 0
             linect = float (Popen(['wc -l ' + logfile],stdout=PIPE,shell=True).\
                 communicate()[0].split()[0])
@@ -354,14 +443,13 @@ def main():
             print '%s patterns excluded' % len(exclude_patterns)
         f = open(logfile)
         # pdb.set_trace()
-        for line in f:
+        for lineno,line in enumerate(f):
             if options.verbose:
-                percent = int (round(loop/linect * 100))
+                percent = int (round(float(lineno)/linect * 100))
                 if percent > 0 and percent % 10 == 0 and percent != last_percent:
                     print '%%%s complete' % percent
                     last_percent = percent
-                    # print len(items_already_output)/loop * 100
-                loop += 1
+                    # print len(items_already_output)/lineno * 100
             if line in ('','\n'): continue # blank line at end
             fields = line.split('\t')
             logged_path = fields[PATH].strip()
@@ -420,7 +508,7 @@ def main():
 
 
         for p in items_removed:
-            print 'removing %s' % p
+            # print 'removing %s' % p
             remove(p)
         f.close()
         unsorted.close()
@@ -433,7 +521,7 @@ def main():
             lsort_command.append(unsorted_file) # the unsorted input transcript
             call(lsort_command)
             if add == fsdiff_p and options.checksum:
-                # python version of fsdiff still can do cksums right
+                # python version of fsdiff still can't do cksums right
                 # link the tmp file and install root to fool radmind into doing a lcksum
                 t_name = os.path.basename(tmpfile)
                 if not os.path.exists('/var/radmind/tmp/transcript'):
@@ -457,18 +545,57 @@ def main():
                 os.rename('/var/radmind/tmp/transcript/' + t_name,tmpfile)
 
             if options.out_file:
-                os.rename(tmpfile,options.out_file)
+                if os.path.isdir(options.out_file) and options.installer_package:
+                    outfile_name = os.path.basename(options.installer_package).replace('.pkg','.T')
+                    outfile = os.path.join(options.out_file,outfile_name)
+                else:
+                    outfile = options.out_file
+                os.rename(tmpfile,outfile)
+
             else:
                 call(['cat',tmpfile])
+        elif options.format == 'package':
+            # create a package from the temp transcript
+            # todo refactor this outfile rename bit with radmind format above
+            if options.out_file:
+                if os.path.isdir(options.out_file) and options.installer_package:
+                    outfile_name = os.path.basename(options.installer_package).replace('.pkg','-repack.pkg')
+                    outfile = os.path.join(options.out_file,outfile_name)
+                else:
+                    outfile = options.out_file
+            pkg_root = '/tmp/package_root'
+            pkg_maker_cmd = '/Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker'
+            if os.path.exists(pkg_root): 
+                shutil.rmtree(pkg_root)
+            os.makedirs(pkg_root)                
+            os.chdir('/')
+            for line in open(unsorted_file):
+                abs_path = os.path.abspath(line[2:].strip())
+                # print type(abs_path)
+                if os.path.isfile (abs_path):
+                    dest = os.path.join (pkg_root,os.path.dirname(abs_path)[1:] + '/')
+                    call(['ditto',abs_path,dest])
+            pkg_id = os.path.basename(options.installer_package)
+            call([pkg_maker_cmd,'--root',pkg_root,'--id',pkg_id,'--title',pkg_id,'--target','10.4','--out',outfile])
+            if not debug: shutil.rmtree(pkg_root)
         else:
+            # 'standard' output
             sortcmd = ['sort',unsorted_file]
             if options.out_file:
                 sortcmd.extend(['-o',options.out_file])
             call(sortcmd)
-    
+
     
     try:
+        if options.verbose:
+            print "Starting Install"
         install()
+        
+        ## Debugging
+        # global pids
+        # pids = ['60484']
+        # pids = ['71687', '71684', '70596', '71680', '71666', '71688', '71705', '71699', '71691', '71692', '70584', '71703', '71696', '70564', '71674', '70560', '71670', '70532', '70556', '70516', '71707', '70480']
+        
         parselog()
         cleanup()
         sys.exit(0)

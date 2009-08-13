@@ -1,0 +1,124 @@
+# Watched Install
+Preston Holmes
+preston@ptone.com
+http://www.ptone.com/dablog/
+
+**The Problem**
+
+There is often the need in a deployment scenario to repackage an installer into some other format.  This might be a [radmind][1] transcript, a simple payload only installer package or perhaps just a manifest of what exactly changed on the system.
+
+Apple installer style packages contain simple payloads, but often contain pre or postflight scripts which can make additional and important changes to the filesystem.
+
+There are a couple methods that have been used to try to deduce what exactly was installed:
+
+*The snapshot method:*
+
+This involves taking a snapshot of the filesystem before and after the install and diffing for changes - this is a common method of building radmind transcripts.  One disadvantage of this is that it requires two complete traverses of the entire filesystem to determine changes.  Not so horrible, but if you have 10 minor updates, it can add up.
+
+*The packagemaker watch:*
+
+From the packagemaker man page:
+
+>If the --watch ﬂag is speciﬁed, packagemaker will monitor ﬁlesystem changes until it receives the 
+>SIGUSR1 signal. It will then construct a package of all ﬁles that were created/modiﬁed while it was watching. 
+
+The problem with these first two methods is that the filesystem is a noisy place, with all sort of changes being made by the various processes running.  These are captured with the above methods and then need to be sorted through by hand.  There can arise a lot of confusion over whether a given change was made by the installer or by some other process as all changes are captured without any note of the source of the change.
+
+*Install on non-boot volume:*
+
+Installing on a non-boot volume with the snapshot method resolves the noise issue, as generally most of the FS noise is happening on the boot volume.  The problem with this method is that a number of installers either expect or require, sometimes quietly and implicitly that they be run on the boot volume.
+
+**Shooting for the best of both worlds**
+
+watchedinstall is a tool composed of a FSEvents logging tool and a Python script that tries to determine exactly what gets installed by an installer.
+
+The tool takes an apple installer package, or the process id (pid) of a 3rd party installer and then logs two sets of information while the installer runs:
+
+*   All spawned processes and their parent
+*   All changes to the filesystem
+
+When the installation is done, watched install builds a list of all the processes involved in the installation. Even for something simple like the sound effects installer from iLife involves nearly a dozen descendent processes of the initial installer process.
+
+This list of installer related pids is used to filter the list of FS changes to only those made by the installation process.
+
+The filtered list of changes is then output in a number of formats, currently the choices are:
+
+*   A radmind transcript
+*   A simple payload installer package
+*   A text file manifest of the changes
+
+**Installation**
+
+1. Copy the fsewatcher tool somewhere on your path, for example /usr/local/bin and make sure its executable (chmod +x)
+
+2. The watchedinstall.py python script can be run from anywhere.
+
+**Usage**
+
+You must run watchedinstall.py as root - it will fire up the companion fsewatcher tool as long as it can be found in your path.
+
+You can make the watchedinstall.py file executable, or just run it through the Python interpreter directly.
+
+The script uses the following options:
+
+*   -h, --help              for a more concise form of this help
+*   -v, --verbose           display all verbose installer output
+*   -e, --english-only      filter out non english project files
+*   -o PATH, --output=PATH
+
+file to save results in, if not specified use standard out.  If not specified verbosity will be disabled so that standard output is a clean representation of the output.  Standard out results only make sense for radmind and standard formats.  If the argument is a directory, the script will try to intelligently name the output file based on the installer source.  So iLifeUpdate02.pkg becomes a transcript iLifeUpdate02.T for radmind output, or iLifeUpdate02-repack.pkg for package format.
+
+*   -f [radmind | standard | package], --format=[radmind | standard | package]
+    Format for output file, default: radmind.
+    *   Radmind format will create a radmind transcript.
+        
+        Radmind format requires radmind be installed.
+    *   Standard output creates a text file manifest of changes. 
+    *   Package format will create a simple payload package (no scripts) of the changes made.  
+        
+        The way packagemaker works is it will use the permissions of the boot volume for those in the package.  
+        
+        Also the 'package' format requires the install target be the boot volume.  
+        
+        The package format option requires that developer tools be installed.
+
+*   -i PID, --pid=PID     
+
+Manually specify the PID of the parent installer process.  If you are using a non-Apple installer style installer (ie installerVISE) you can fire up the installer, determine its pid from a tool like PS or Activity Monitor and pass that pid to watchedinstall.  Once watched install is running, you can then return to the installer and start the installation.  When the installer quits, watchedinstall will finish its work.
+
+**Installer Options:**
+These options apply if you are choosing to invoke Apple's installer with a package
+
+*   -p PATH, --package=PATH     package to install, can be an mpkg
+*   -t PATH, --target=PATH      target of package install, defaults to /
+
+**Radmind Options:**
+These options only apply if the radmind format is used
+
+*   -K PATH             path to command file, default is standard command.K
+*   -I                  use case insensitive sorting
+*   -C [ . | / ], --comparison-path=[ . | / ]       comparison path to use, default is relative
+*   -c [ only sha1 supported ]      checksum if any, only sha1 supported for -P option
+*   -P      enable experimental pure python fsdiff output (a bit faster - but not recommended)
+
+Note that any radmind excludes are parsed and respected.
+
+**Usage Examples**
+
+    sudo python path/to/watchedinstall.py -ve -p path/to/AppleIntermediateCodec.pkg -o /transcripts/ -I
+
+will create /transcripts/AppleIntermediateCodec.T without english support files
+
+    sudo python path/to/watchedinstall.py -K /var/radmind/client/clientUpdate.K -I -p path/to/AppleIntermediateCodec.pkg > /AIC.T
+    
+will create /AIC.T
+
+    sudo python path/to/watchedinstall.py --format standard -p path/to/AppleIntermediateCodec.pkg > /AIC.txt
+
+creates a textfile manifest of filesystem changes
+
+    sudo python path/to/watchedinstall.py -e -o /Packages/ --format package -p path/to/AppleIntermediateCodec.pkg
+
+repacks the installer into payload only package without non-english files at /Packages/AppleIntermediateCodec-repack.pkg
+
+[1]:http://rsug.itd.umich.edu/software/radmind/
