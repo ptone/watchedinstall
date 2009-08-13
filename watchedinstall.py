@@ -44,6 +44,9 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
+
+Todo:
+scan for positive items that are in negative space - right now negative space is ignored
 """
 
 import sys
@@ -64,7 +67,7 @@ pidlog = '/tmp/pid_log.log'
 unsorted_file = '/tmp/unsorted'
 pkg_maker_cmd = '/Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker'
 
-debug = False
+debug = True
 
 pids = set() # maintains collection of unique values
 
@@ -228,13 +231,13 @@ def main():
             fs_logger = Popen(['fsewatcher'], stdout=log_handle,shell=True)
         except OSError:
             sys.exit("Unable to run fsevents tool, make sure it was properly installed")
+        pid_logger = Popen(['execsnoop'],stdout=pidlog_handle,shell=True)
         if options.installer_package:
             installer_command = ['installer','-verbose','-pkg', options.installer_package,'-target', options.installer_target]
             # these environment variable can help convince installer to install on non-boot drive
             os.environ['CM_BUILD'] = 'CM_BUILD'
             os.environ['COMMAND_LINE_INSTALL'] = '1'
             
-            pid_logger = Popen(['execsnoop'],stdout=pidlog_handle,shell=True)
             
             if options.verbose:
                 installer_out = sys.stdout
@@ -277,16 +280,14 @@ def main():
             # todo: add execsnoop feature to this part
             while parent_found:
                 process_list = Popen("ps -ax -o ppid=,pid=,command=", shell=True, stdout=PIPE,stderr=PIPE).communicate()[0].split('\n')[:-1]
+                parent_found = False
                 for p in process_list:
                     data = p.split()
                     if data[1] == parentPID:
                         parent_found = True
-                    else:
-                        parent_found = False
-                    # if data[0] in pids:
-                    #     pids.add(data[1])
+                        break # for loop
                 if not parent_found:
-                    break
+                    break # while loop
                 time.sleep(1)
                 
         # stop the logger
@@ -340,7 +341,7 @@ def main():
                 path = prep_path(path)
                 twhich_result = Popen(twhich_command + radmind_options + [path],stdout=PIPE).communicate()[0]
                 # twhich_result = ''
-                print twhich_result
+                # print twhich_result
                 twhich_lines = twhich_result.split('\n')
                 if len (twhich_lines) > 1:
                     if '# Exclude' in twhich_lines[0]:
@@ -546,7 +547,8 @@ def main():
 
             if options.out_file:
                 if os.path.isdir(options.out_file) and options.installer_package:
-                    outfile_name = os.path.basename(options.installer_package).replace('.pkg','.T')
+                    # outfile_name = os.path.basename(options.installer_package).replace('.pkg','.T')
+                    outfile_name = re.sub ('(.pkg|.mpkg)','.T',os.path.basename(options.installer_package))
                     outfile = os.path.join(options.out_file,outfile_name)
                 else:
                     outfile = options.out_file
@@ -559,7 +561,8 @@ def main():
             # todo refactor this outfile rename bit with radmind format above
             if options.out_file:
                 if os.path.isdir(options.out_file) and options.installer_package:
-                    outfile_name = os.path.basename(options.installer_package).replace('.pkg','-repack.pkg')
+                    # outfile_name = os.path.basename(options.installer_package).replace('.pkg','-repack.pkg')
+                    outfile_name = re.sub ('(.pkg|.mpkg)','-repack.pkg',os.path.basename(options.installer_package))
                     outfile = os.path.join(options.out_file,outfile_name)
                 else:
                     outfile = options.out_file
