@@ -222,15 +222,10 @@ def main():
         log_handle = open(logfile,'w')
         pidlog_handle = open(pidlog,'w')
         
-        SCRIPT_ROOT = os.path.dirname(os.path.realpath(__file__))
-        fsewatcher = os.path.join(SCRIPT_ROOT,'fsewatcher')
-        if not os.path.exists(fsewatcher) and os.access(fsewatcher,os.X_OK):
-            # will need to be on path
-            fsewatcher = 'fsewatcher'
         try:
             fs_logger = Popen(['fsewatcher'], stdout=log_handle,shell=True)
         except OSError:
-            sys.exit("Unable to run fsevents tool, make sure it was properly installed")
+            sys.exit("Unable to run fsewatcher tool, make sure it was properly installed")
         pid_logger = Popen(['execsnoop'],stdout=pidlog_handle,shell=True)
         if options.installer_package:
             installer_command = ['installer','-verbose','-pkg', options.installer_package,'-target', options.installer_target]
